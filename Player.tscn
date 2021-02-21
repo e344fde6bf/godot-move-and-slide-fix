@@ -1,0 +1,32 @@
+[gd_scene load_steps=5 format=2]
+
+[ext_resource path="res://Player.gd" type="Script" id=1]
+[ext_resource path="res://DebugInfo.tscn" type="PackedScene" id=2]
+
+[sub_resource type="CapsuleShape" id=1]
+height = 2.0
+
+[sub_resource type="CapsuleMesh" id=2]
+mid_height = 2.0
+
+[node name="Player" type="KinematicBody"]
+script = ExtResource( 1 )
+
+[node name="PlayerBody" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, -1.62921e-07, -1, 0, 1, -1.62921e-07, 0, 0, 0 )
+shape = SubResource( 1 )
+
+[node name="Model" type="CSGMesh" parent="PlayerBody"]
+transform = Transform( 1, 0, 0, 0, 1, 3.12639e-13, 0, -3.12639e-13, 1, 0, -1.62921e-07, 2.65433e-14 )
+mesh = SubResource( 2 )
+
+[node name="CameraHelper" type="Spatial" parent="."]
+
+[node name="CameraPosition" type="Spatial" parent="CameraHelper"]
+
+[node name="Camera" type="Camera" parent="CameraHelper/CameraPosition"]
+far = 200.0
+
+[node name="DebugInfo" parent="." instance=ExtResource( 2 )]
+rect_scale = Vector2( 1.8, 1.8 )
+rect_pivot_offset = Vector2( 0, -1.671 )
