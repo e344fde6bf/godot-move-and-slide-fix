@@ -77,8 +77,9 @@ func _draw():
 
 		var y1 = BOT_Y + -(clamp(last_val, plot_min, plot_max) - plot_min) * scale
 		var y2 = BOT_Y + -(clamp(this_val, plot_min, plot_max) - plot_min) * scale
-		draw_line(rec+Vector2(last_i, y1), rec+Vector2(i, y1), line_color)
-		draw_line(rec+Vector2(i, y1), rec+Vector2(i, y2), line_color)
+		if i - last_i > 1:
+			draw_line(rec+Vector2(last_i, y1), rec+Vector2(i, y1), line_color)
+		draw_line(rec+Vector2(i-1, y1), rec+Vector2(i, y2), line_color)
 		
 		min_value = min(min_value, this_val)
 		max_value = max(max_value, this_val)

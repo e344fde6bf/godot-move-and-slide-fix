@@ -8,7 +8,7 @@ const MAX_SLOPE_ANGLE = deg2rad(60)
 const CAMERA_CLAMP_ANGLE = deg2rad(89)
 const MAX_SLIDES = 4
 
-export(float, 0.1, 100.0) var camera_distance = 15.0
+export(float, 0.1, 100.0) var camera_distance = 12.0
 export var follow_floor_rotation: bool = true
 var mouse_sensitivity = 0.01
 
@@ -34,10 +34,11 @@ var linear_vel_1: Vector3 # linear velocity of the floor at t[i-1]
 var linear_vel_2: Vector3 # linear velocity of the floor at t[i-2]
 
 export var enable_jerk_smoothing: bool = true
-export var jerk_limit: float = 2.0
-export var smoothing_factor: float = 0.05
+export(float, 0.0) var jerk_limit: float = 2.0
+## Smaller values for smoother correction with less overshoot.
+## Larger values for faster correction with more overshoot.
+export(float, 0.0, 1.0) var smoothing_factor: float = 0.05
 var catch_up_vector: Vector3
-
 
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
