@@ -2,7 +2,7 @@ extends KinematicBody
 
 const physics_speed = 1
 const GRAVITY = -120 * physics_speed
-const JUMP_SPEED = 45 * physics_speed
+const JUMP_SPEED = 50 * physics_speed
 const PLAYER_SPEED = 30 * physics_speed
 const MAX_SLOPE_ANGLE = deg2rad(60)
 const CAMERA_CLAMP_ANGLE = deg2rad(89)
@@ -27,18 +27,10 @@ var input_movement_vector: Vector2
 var vel: Vector3 = Vector3()
 var camera_rotation = Vector3()
 var gravity_vel: Vector3 = Vector3()
+const JUMP_BUFFER_FRAME_COUNT = 3
+var jump_frame_buffering: int = 0
 
 export var use_improved_approximation: bool = true
-var frames_on_floor_count: int = 0
-var linear_vel_1: Vector3 # linear velocity of the floor at t[i-1]
-var linear_vel_2: Vector3 # linear velocity of the floor at t[i-2]
-
-export var enable_jerk_smoothing: bool = true
-export(float, 0.0) var jerk_limit: float = 2.0
-## Smaller values for smoother correction with less overshoot.
-## Larger values for faster correction with more overshoot.
-export(float, 0.0, 1.0) var smoothing_factor: float = 0.05
-var catch_up_vector: Vector3
 
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -46,19 +38,18 @@ func _ready():
 	debug_info.add("fps", 0)
 	debug_info.add("time", 0)
 	debug_info.add("use_improved_approximation", use_improved_approximation)
-	debug_info.add("jerk_smoothing", enable_jerk_smoothing)
 
 func _process(_delta):
+	pass
+
+func _physics_process(delta):
 	debug_info.add("fps", Engine.get_frames_per_second())
 	debug_info.add("time", OS.get_ticks_msec() / 1000.0)
 	debug_info.add("use_improved_approximation", use_improved_approximation)
-	debug_info.add("jerk_smoothing", enable_jerk_smoothing)
-	debug_info.render()
-
-func _physics_process(delta):
 	process_input(delta)
 	process_movement(delta)
 	add_position_marker(delta)
+	debug_info.render()
 
 func improved_floor_velocity_estimate(delta):
 	"""
@@ -71,84 +62,35 @@ func improved_floor_velocity_estimate(delta):
 	out.
 	"""
 	if !is_on_floor():
-		debug_info.add("floor_linear_vel", null)
-		debug_info.add("floor_linear_accel", null)
-		debug_info.add("floor_linear_jerk", null)
 		debug_info.add("angular_velocity", null)
-		frames_on_floor_count = 0
 		return Vector3()
-	frames_on_floor_count += 1
 	
-	return -get_floor_velocity() + floor_linear_velocity(delta) + floor_angular_velocity(delta)
+	return -get_floor_velocity() + floor_velocity_due_to_rotation(delta)
 
-func floor_linear_velocity(delta):
+func get_floor_displacement():
+	"""
+	This function returns how much the floor has moved since the start of the frame
+	"""
 	# FIXME: don't assume that the first object we collided with was the floor 
 	var floor_node = get_slide_collision(0).collider
-	# get_floor_velocity() uses the velocity of floor stored in the KinematicCollision 
-	# created last frame in move_and_slide(). This is one frame out of date when
-	# the next frame is being processed so query the PhysicsServer to get the
-	# floor's current velocity.
-	# FIXME: handle the case were floor node gets deleted between frames, etc
-	var floor_vel_newer = PhysicsServer.body_get_direct_state(floor_node.get_rid()).linear_velocity  
-	var v0 = floor_vel_newer # velocity of the floor at time t[i]
+	var floor_start_pos = PhysicsServer.body_get_direct_state(floor_node.get_rid()).transform.origin
+	var intra_frame_motion = floor_node.global_transform.origin - floor_start_pos
 	
-	if frames_on_floor_count == 1:
-		linear_vel_1 = v0
-		linear_vel_2 = v0
-		catch_up_vector = Vector3()
-		return v0
-	elif frames_on_floor_count >= 2:
-		# use finite differences to approximate the floor's velocity during this frame
-		var accel_0 = (v0 - linear_vel_1) # acceleration t[i]
-		var accel_1 = (linear_vel_1 - linear_vel_2) # acceleration t[i-1]
-		var jerk = (accel_0 - accel_1) # jerk t[i]
+	return intra_frame_motion
 		
-		var jerk_limit_exceeded = (jerk.length_squared() > jerk_limit*jerk_limit) and frames_on_floor_count > 3
-		debug_info.plot_bool("excessive jerk", jerk_limit_exceeded)
-		jerk_limit_exceeded = jerk_limit_exceeded and enable_jerk_smoothing
-		
-		var estimated_floor_vel = Vector3()
-		
-		if frames_on_floor_count == 1:
-			estimated_floor_vel = v0
-		elif jerk_limit_exceeded:
-			estimated_floor_vel = linear_vel_1 + accel_0*0.5
-			catch_up_vector += accel_0 + (v0-estimated_floor_vel)
-		else:
-			estimated_floor_vel = v0 + accel_0 + jerk
-			estimated_floor_vel += catch_up_vector * smoothing_factor
-			catch_up_vector *= (1 - smoothing_factor)
-
-		
-		debug_info.add("floor_linear_vel", v0)
-		debug_info.add("floor_linear_accel", accel_0 / delta)
-		debug_info.add("floor_linear_jerk", jerk / delta)
-		debug_info.plot_float("catch up len", catch_up_vector.length(), 0, 50)
-		
-		if jerk_limit_exceeded:
-			linear_vel_2 = v0
-			linear_vel_1 = v0
-		else:
-			linear_vel_2 = linear_vel_1
-			linear_vel_1 = v0
-		
-		return estimated_floor_vel
-		
-func floor_angular_velocity(delta):
+func floor_velocity_due_to_rotation(delta):
 	# FIXME: don't assume that the first object we collided with was the floor 
 	var collision = get_slide_collision(0)
 	var floor_node: Node = collision.collider
 	var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
 	
-	if ang_vel.length_squared() == 0:
+	if ang_vel == Vector3():
 		return Vector3()
 	
 	# the origin point in global coordinates
 	var rotation_origin = floor_node.global_transform.origin
-	# NOTE: collision.point is out of date compared to floor_node current position
-	# so want to estimate it for this frame
-	# TODO: work this out better
-	var current_collision_pos = self.global_transform.origin
+	# updated based on how much we moved this frame already
+	var current_collision_pos = self.global_transform.origin + get_floor_displacement()
 	var collision_pos_relative = current_collision_pos - rotation_origin
 	var next_rotated_xform = Transform().rotated(ang_vel.normalized(), ang_vel.length()*delta)
 	var collision_pos_relative_next = next_rotated_xform.xform(collision_pos_relative)
@@ -159,8 +101,6 @@ func floor_angular_velocity(delta):
 	return v_avg
 
 func process_movement(delta):
-
-	
 	var cam_transform = camera.get_global_transform()
 	dir = Vector3.ZERO
 
@@ -169,28 +109,30 @@ func process_movement(delta):
 		dir += -cam_transform.basis.z * input_movement_vector[1]
 		dir.y = 0
 		dir = dir.normalized()
-		
-	var player_vel = dir * PLAYER_SPEED
-	
-	var floor_vel_adjust 
-	if use_improved_approximation:
-		floor_vel_adjust = improved_floor_velocity_estimate(delta)
-	else:
-		floor_vel_adjust = Vector3()
-	
-	# debug_info.plot_float("floor speed", get_floor_velocity().length(), 0.0, 50.0)
-	var floor_vel = (floor_vel_adjust + get_floor_velocity())
-	debug_info.plot_float("speed adjust", floor_vel.length(), 0.0, 50.0)
 
-	vel = player_vel + gravity_vel + floor_vel_adjust
+	var player_vel = dir * PLAYER_SPEED
+	var floor_vel_adjust = improved_floor_velocity_estimate(delta)
+	
+	if is_on_floor() and jump_frame_buffering > 0:
+		gravity_vel.y = JUMP_SPEED
+		# `move_and_slide()` adds `get_floor_velocity()` internally so we add
+		# `-get_floor_velocity()` to counteract this in `floor_vel_adjust`.
+		# However, now we are goin to jump, we won't collide with the floor,
+		# so `move_and_slide()` won't add this value internally, so we don't
+		# need to cancel it out this time
+		floor_vel_adjust += get_floor_velocity()
+		jump_frame_buffering = 0
+	else:
+		gravity_vel += Vector3.UP * delta * GRAVITY
+		jump_frame_buffering -= 1
+
+	vel = player_vel + gravity_vel + floor_vel_adjust * int(use_improved_approximation)
 	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES)
 	gravity_vel = vel.project(Vector3.UP)
 	
-	gravity_vel += Vector3.UP * delta * GRAVITY
-	
-	debug_info.plot_bool("is_on_floor", is_on_floor())
-	debug_info.add("velocity", vel)
-	debug_info.add("floor_velocity", get_floor_velocity())
+	if is_on_floor() and use_improved_approximation:
+		self.transform.origin += get_floor_displacement()
+		gravity_vel = Vector3()
 
 	if is_on_floor() and follow_floor_rotation:
 		var collision = get_slide_collision(0)
@@ -201,8 +143,12 @@ func process_movement(delta):
 			# Only rotate around UP-axis for camera
 			camera_rotation += ang_vel.project(Vector3.UP)*delta
 			camera_helper.rotation = camera_rotation
-
-
+		
+	debug_info.plot_bool("is_on_floor", is_on_floor())
+	debug_info.plot_float("floor_velocity()", get_floor_velocity().length())
+	debug_info.add("velocity", vel)
+	
+	
 func process_input(_delta):
 	if Input.is_action_just_pressed("ui_cancel"):
 		if Input.get_mouse_mode() == Input.MOUSE_MODE_VISIBLE:
@@ -212,8 +158,6 @@ func process_input(_delta):
 	
 	if Input.is_action_just_pressed("toggle_vel_func"):
 		use_improved_approximation = !use_improved_approximation
-	if Input.is_action_just_pressed("toggle_jerk_smoothing"):
-		enable_jerk_smoothing = !enable_jerk_smoothing
 			
 	input_movement_vector = Vector2()
 	if Input.is_action_pressed("movement_forward"):
@@ -228,7 +172,8 @@ func process_input(_delta):
 	input_movement_vector = input_movement_vector.normalized()
 
 	if is_on_floor() and Input.is_action_just_pressed("movement_jump"):
-		gravity_vel.y = JUMP_SPEED
+		jump_frame_buffering = JUMP_BUFFER_FRAME_COUNT
+
 
 var marker_timer: float = 0.0
 func add_position_marker(delta):

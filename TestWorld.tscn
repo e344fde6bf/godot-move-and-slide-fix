@@ -605,5 +605,3 @@ shape = SubResource( 21 )
 [node name="Player" parent="." instance=ExtResource( 1 )]
 transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 0 )
 collision/safe_margin = 0.01
-follow_floor_rotation = false
-smoothing_factor = 0.2
