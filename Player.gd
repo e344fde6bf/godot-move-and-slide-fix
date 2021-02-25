@@ -29,6 +29,7 @@ var camera_rotation = Vector3()
 var gravity_vel: Vector3 = Vector3()
 const JUMP_BUFFER_FRAME_COUNT = 3
 var jump_frame_buffering: int = 0
+var floor_node = null
 
 export var use_improved_approximation: bool = true
 
@@ -50,7 +51,7 @@ func _physics_process(delta):
 	process_movement(delta)
 	add_position_marker(delta)
 	debug_info.render()
-
+	
 func improved_floor_velocity_estimate(delta):
 	"""
 	This function returns an estimate of the floor velocity for use in
@@ -71,34 +72,41 @@ func get_floor_displacement():
 	"""
 	This function returns how much the floor has moved since the start of the frame
 	"""
-	# FIXME: don't assume that the first object we collided with was the floor 
-	var floor_node = get_slide_collision(0).collider
 	var floor_start_pos = PhysicsServer.body_get_direct_state(floor_node.get_rid()).transform.origin
-	var intra_frame_motion = floor_node.global_transform.origin - floor_start_pos
-	
-	return intra_frame_motion
+	return floor_node.global_transform.origin - floor_start_pos
 		
 func floor_velocity_due_to_rotation(delta):
-	# FIXME: don't assume that the first object we collided with was the floor 
-	var collision = get_slide_collision(0)
-	var floor_node: Node = collision.collider
+	"""
+	This function returns the velocity due to the rotation of the current floor node.
+	"""
 	var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
+	debug_info.add("angular_velocity", ang_vel)
 	
 	if ang_vel == Vector3():
 		return Vector3()
 	
 	# the origin point in global coordinates
 	var rotation_origin = floor_node.global_transform.origin
-	# updated based on how much we moved this frame already
+	# rotate based on where our character is this frame,
+	# updated based on how much the floor has moved already this frame
 	var current_collision_pos = self.global_transform.origin + get_floor_displacement()
 	var collision_pos_relative = current_collision_pos - rotation_origin
 	var next_rotated_xform = Transform().rotated(ang_vel.normalized(), ang_vel.length()*delta)
 	var collision_pos_relative_next = next_rotated_xform.xform(collision_pos_relative)
-	
 	var v_avg = (collision_pos_relative_next - collision_pos_relative) / delta
-
-	debug_info.add("angular_velocity", ang_vel)
 	return v_avg
+
+func get_floor_node():
+	""" a hacky function to find the floor node """
+	assert(is_on_floor())
+	for i in range(get_slide_count()):
+		var collision = get_slide_collision(i)
+		if collision.normal != get_floor_normal():
+			continue
+		if collision.collider_velocity != get_floor_velocity():
+			continue
+		return collision.collider
+	assert(false)
 
 func process_movement(delta):
 	var cam_transform = camera.get_global_transform()
@@ -130,15 +138,16 @@ func process_movement(delta):
 	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES)
 	gravity_vel = vel.project(Vector3.UP)
 	
+	if is_on_floor():
+		floor_node = get_floor_node()
+	
 	if is_on_floor() and use_improved_approximation:
 		self.transform.origin += get_floor_displacement()
 		gravity_vel = Vector3()
 
 	if is_on_floor() and follow_floor_rotation:
-		var collision = get_slide_collision(0)
-		var floor_node: Node = collision.collider
 		var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
-		if ang_vel.length_squared() != 0:
+		if ang_vel != Vector3():
 			player_body.transform.basis = player_body.transform.basis.rotated(ang_vel.normalized(), ang_vel.length()*delta)
 			# Only rotate around UP-axis for camera
 			camera_rotation += ang_vel.project(Vector3.UP)*delta
@@ -147,8 +156,8 @@ func process_movement(delta):
 	debug_info.plot_bool("is_on_floor", is_on_floor())
 	debug_info.plot_float("floor_velocity()", get_floor_velocity().length())
 	debug_info.add("velocity", vel)
-	
-	
+
+
 func process_input(_delta):
 	if Input.is_action_just_pressed("ui_cancel"):
 		if Input.get_mouse_mode() == Input.MOUSE_MODE_VISIBLE:
@@ -173,7 +182,6 @@ func process_input(_delta):
 
 	if is_on_floor() and Input.is_action_just_pressed("movement_jump"):
 		jump_frame_buffering = JUMP_BUFFER_FRAME_COUNT
-
 
 var marker_timer: float = 0.0
 func add_position_marker(delta):
