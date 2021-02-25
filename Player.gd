@@ -31,70 +31,48 @@ const JUMP_BUFFER_FRAME_COUNT = 3
 var jump_frame_buffering: int = 0
 var floor_node = null
 
-export var use_improved_approximation: bool = true
+var global_parent = null
+var current_parent = null
+var is_reparenting = false
+
+func _enter_tree():
+	if current_parent == null:
+		print("entering the tree for the first time")
+		return
+	print("entering the tree again from: ", current_parent.name)
+	
+func _exit_tree():
+	print("exiting the tree from: ", current_parent.name)
 
 func _ready():
+	if is_reparenting:
+		print("reparenting now, this is so")
+		is_reparenting = false
+		return
+	else:
+		print("not reparenting")
+	print("readying myself")
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	camera_position.translate_object_local(Vector3(0, 0, camera_distance))
 	debug_info.add("fps", 0)
 	debug_info.add("time", 0)
-	debug_info.add("use_improved_approximation", use_improved_approximation)
+	
+	global_parent = get_parent()
+	current_parent = global_parent
+	print("global_parent set to ", global_parent.name)
+	print("current_parent set to ", current_parent.name)
 
 func _process(_delta):
 	pass
 
 func _physics_process(delta):
+	print("executing physics farme: ", Engine.get_physics_frames())
 	debug_info.add("fps", Engine.get_frames_per_second())
 	debug_info.add("time", OS.get_ticks_msec() / 1000.0)
-	debug_info.add("use_improved_approximation", use_improved_approximation)
 	process_input(delta)
 	process_movement(delta)
-	add_position_marker(delta)
+	# add_position_marker(delta)
 	debug_info.render()
-	
-func improved_floor_velocity_estimate(delta):
-	"""
-	This function returns an estimate of the floor velocity for use in
-	move_and_slide(). The result should be added to the `velocity` argument of
-	`move_and_slide()`.
-	
-	NOTE: since `move_and_slide()` adds `get_floor_velocity()` internally,
-	this function includes `-get_floor_velocity()` in the result to cancel this
-	out.
-	"""
-	if !is_on_floor():
-		debug_info.add("angular_velocity", null)
-		return Vector3()
-	
-	return -get_floor_velocity() + floor_velocity_due_to_rotation(delta)
-
-func get_floor_displacement():
-	"""
-	This function returns how much the floor has moved since the start of the frame
-	"""
-	var floor_start_pos = PhysicsServer.body_get_direct_state(floor_node.get_rid()).transform.origin
-	return floor_node.global_transform.origin - floor_start_pos
-		
-func floor_velocity_due_to_rotation(delta):
-	"""
-	This function returns the velocity due to the rotation of the current floor node.
-	"""
-	var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
-	debug_info.add("angular_velocity", ang_vel)
-	
-	if ang_vel == Vector3():
-		return Vector3()
-	
-	# the origin point in global coordinates
-	var rotation_origin = floor_node.global_transform.origin
-	# rotate based on where our character is this frame,
-	# updated based on how much the floor has moved already this frame
-	var current_collision_pos = self.global_transform.origin + get_floor_displacement()
-	var collision_pos_relative = current_collision_pos - rotation_origin
-	var next_rotated_xform = Transform().rotated(ang_vel.normalized(), ang_vel.length()*delta)
-	var collision_pos_relative_next = next_rotated_xform.xform(collision_pos_relative)
-	var v_avg = (collision_pos_relative_next - collision_pos_relative) / delta
-	return v_avg
 
 func get_floor_node():
 	""" a hacky function to find the floor node """
@@ -108,6 +86,33 @@ func get_floor_node():
 		return collision.collider
 	assert(false)
 
+func closure_remove_child(parent, child):
+	parent.call_deferred("remove_child", child)
+
+func closure_add_child(parent, child):
+	yield(parent.get_tree(), "idle_frame")
+	print("added child.  in_physics_frame: ", Engine.is_in_physics_frame())
+	parent.call_deferred("add_child", child)
+
+func make_parent(new_parent):
+	assert(new_parent != current_parent)
+	is_reparenting = true
+	var old_transform = self.global_transform
+	# closure_remove_child(current_parent, self)
+	# closure_add_child(new_parent, self)
+	#current_parent.call_deferred("remove_child", self)
+	#new_parent.call_deferred("add_child", self)
+	current_parent.remove_child(self)
+	self.transform.origin = Vector3(9e9, 9e9, 9e9)
+	new_parent.add_child(self)
+	#print("requesting added child")
+	#call_deferred("closure_add_child", new_parent, self)
+	# self.owner = new_parent
+	self.global_transform = old_transform
+	# self.set_physics_process(false)
+	# self.call_deferred("set_physics_process", true)
+	current_parent = new_parent
+
 func process_movement(delta):
 	var cam_transform = camera.get_global_transform()
 	dir = Vector3.ZERO
@@ -119,43 +124,46 @@ func process_movement(delta):
 		dir = dir.normalized()
 
 	var player_vel = dir * PLAYER_SPEED
-	var floor_vel_adjust = improved_floor_velocity_estimate(delta)
 	
 	if is_on_floor() and jump_frame_buffering > 0:
 		gravity_vel.y = JUMP_SPEED
-		# `move_and_slide()` adds `get_floor_velocity()` internally so we add
-		# `-get_floor_velocity()` to counteract this in `floor_vel_adjust`.
-		# However, now we are goin to jump, we won't collide with the floor,
-		# so `move_and_slide()` won't add this value internally, so we don't
-		# need to cancel it out this time
-		floor_vel_adjust += get_floor_velocity()
 		jump_frame_buffering = 0
 	else:
 		gravity_vel += Vector3.UP * delta * GRAVITY
 		jump_frame_buffering -= 1
 
-	vel = player_vel + gravity_vel + floor_vel_adjust * int(use_improved_approximation)
+	vel = player_vel + gravity_vel - get_floor_velocity()
 	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES)
 	gravity_vel = vel.project(Vector3.UP)
-	
+
 	if is_on_floor():
 		floor_node = get_floor_node()
-	
-	if is_on_floor() and use_improved_approximation:
-		self.transform.origin += get_floor_displacement()
-		gravity_vel = Vector3()
 
-	if is_on_floor() and follow_floor_rotation:
+	if is_on_floor() and !follow_floor_rotation:
 		var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
 		if ang_vel != Vector3():
 			player_body.transform.basis = player_body.transform.basis.rotated(ang_vel.normalized(), ang_vel.length()*delta)
 			# Only rotate around UP-axis for camera
-			camera_rotation += ang_vel.project(Vector3.UP)*delta
+			camera_rotation -= ang_vel.project(Vector3.UP)*delta
 			camera_helper.rotation = camera_rotation
 		
 	debug_info.plot_bool("is_on_floor", is_on_floor())
 	debug_info.plot_float("floor_velocity()", get_floor_velocity().length())
 	debug_info.add("velocity", vel)
+	debug_info.add("parent.name", str(current_parent) + " : " + current_parent.name)
+	
+	if is_on_floor() and current_parent != floor_node:
+		# yield(get_tree(), "idle_frame")
+		print("\n", current_parent.name, " -> ", floor_node.name)
+		print("in physics frame: ", Engine.get_physics_frames())
+		make_parent(floor_node)
+		# call_deferred("make_parent", floor_node)
+	elif !is_on_floor() and current_parent != global_parent:
+		print("\n", current_parent.name, " -> ", global_parent.name)
+		print("in physics frame: ", Engine.get_physics_frames())
+		# call_deferred("make_parent", global_parent)
+		# yield(get_tree(), "idle_frame")
+		make_parent(global_parent)
 
 
 func process_input(_delta):
@@ -164,9 +172,6 @@ func process_input(_delta):
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		else:
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	
-	if Input.is_action_just_pressed("toggle_vel_func"):
-		use_improved_approximation = !use_improved_approximation
 			
 	input_movement_vector = Vector2()
 	if Input.is_action_pressed("movement_forward"):
@@ -189,7 +194,7 @@ func add_position_marker(delta):
 	if marker_timer > 0.1:
 		var new_marker = pos_marker.instance()
 		new_marker.transform = self.transform
-		$"..".add_child(new_marker)
+		global_parent.add_child(new_marker)
 		marker_timer = 0.0
 
 func _input(event):

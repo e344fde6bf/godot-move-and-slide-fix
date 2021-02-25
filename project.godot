@@ -68,6 +68,10 @@ toggle_jerk_smoothing={
  ]
 }
 
+[physics]
+
+common/physics_fps=10
+
 [rendering]
 
 threads/thread_model=2
