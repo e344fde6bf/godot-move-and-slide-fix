@@ -1,15 +1,18 @@
 extends KinematicBody
 
 const physics_speed = 1
-const GRAVITY = -120 * physics_speed
+const GRAVITY = -120 * physics_speed * physics_speed
 const JUMP_SPEED = 50 * physics_speed
 const PLAYER_SPEED = 30 * physics_speed
-const MAX_SLOPE_ANGLE = deg2rad(60)
+const MAX_SLOPE_ANGLE = deg2rad(85)
 const CAMERA_CLAMP_ANGLE = deg2rad(89)
 const MAX_SLIDES = 4
 
 export(float, 0.1, 100.0) var camera_distance = 12.0
 export var follow_floor_rotation: bool = true
+export var use_global_up: bool = true
+export var fix_enabled: bool = true
+export var use_position_markers: bool = true
 var mouse_sensitivity = 0.01
 
 onready var player = $"."
@@ -33,45 +36,27 @@ var floor_node = null
 
 var global_parent = null
 var current_parent = null
-var is_reparenting = false
-
-func _enter_tree():
-	if current_parent == null:
-		print("entering the tree for the first time")
-		return
-	print("entering the tree again from: ", current_parent.name)
-	
-func _exit_tree():
-	print("exiting the tree from: ", current_parent.name)
 
 func _ready():
-	if is_reparenting:
-		print("reparenting now, this is so")
-		is_reparenting = false
-		return
-	else:
-		print("not reparenting")
-	print("readying myself")
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	camera_position.translate_object_local(Vector3(0, 0, camera_distance))
 	debug_info.add("fps", 0)
 	debug_info.add("time", 0)
-	
 	global_parent = get_parent()
 	current_parent = global_parent
-	print("global_parent set to ", global_parent.name)
-	print("current_parent set to ", current_parent.name)
 
 func _process(_delta):
 	pass
 
 func _physics_process(delta):
-	print("executing physics farme: ", Engine.get_physics_frames())
 	debug_info.add("fps", Engine.get_frames_per_second())
 	debug_info.add("time", OS.get_ticks_msec() / 1000.0)
+	debug_info.add("fix_enabled", str(fix_enabled) + " (Press Q to Toggle)")
+	debug_info.add("use_global_up", str(use_global_up) + " (Press E to Toggle)")
 	process_input(delta)
 	process_movement(delta)
-	# add_position_marker(delta)
+	if use_position_markers:
+		add_position_marker(delta)
 	debug_info.render()
 
 func get_floor_node():
@@ -86,32 +71,56 @@ func get_floor_node():
 		return collision.collider
 	assert(false)
 
-func closure_remove_child(parent, child):
-	parent.call_deferred("remove_child", child)
-
-func closure_add_child(parent, child):
-	yield(parent.get_tree(), "idle_frame")
-	print("added child.  in_physics_frame: ", Engine.is_in_physics_frame())
-	parent.call_deferred("add_child", child)
-
 func make_parent(new_parent):
 	assert(new_parent != current_parent)
-	is_reparenting = true
 	var old_transform = self.global_transform
-	# closure_remove_child(current_parent, self)
-	# closure_add_child(new_parent, self)
-	#current_parent.call_deferred("remove_child", self)
-	#new_parent.call_deferred("add_child", self)
 	current_parent.remove_child(self)
-	self.transform.origin = Vector3(9e9, 9e9, 9e9)
 	new_parent.add_child(self)
-	#print("requesting added child")
-	#call_deferred("closure_add_child", new_parent, self)
-	# self.owner = new_parent
 	self.global_transform = old_transform
-	# self.set_physics_process(false)
-	# self.call_deferred("set_physics_process", true)
 	current_parent = new_parent
+
+func get_floor_displacement(delta):
+	return get_floor_linear_displacement()
+
+func get_floor_linear_displacement():
+	"""
+	This function returns how much the floor has moved since the start of the frame
+	"""
+	var floor_start_pos = PhysicsServer.body_get_direct_state(floor_node.get_rid()).transform.origin
+	return floor_node.global_transform.origin - floor_start_pos
+
+func lock_basis_up_direction():
+	# Want to keep the players up direction set to (0, 1, 0)
+	var old_basis = global_transform.basis
+	var new_basis = Basis()
+	# use fixed up direction
+	new_basis.y = Vector3.UP
+	# keep forward direction (yaw) by projecting it onto the xz plane
+	var z_planar = old_basis.z - old_basis.z.project(Vector3.UP)
+	new_basis.z = z_planar.normalized()
+	# choose x as the direction orthognal to these two
+	new_basis.x = new_basis.y.cross(new_basis.z)
+	global_transform.basis = new_basis
+
+func handle_player_rotations(delta):
+	var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
+	debug_info.add("floor angular_vel", ang_vel)
+	if ang_vel == Vector3():
+		return
+		
+	var vertical = ang_vel.project(Vector3.UP)
+		
+	if !follow_floor_rotation:
+		camera_rotation -= vertical*delta
+		camera_helper.rotation = camera_rotation
+	
+	if use_global_up:
+		lock_basis_up_direction()
+		
+		# another way to do this, but numerical errors means our up direction won't be exact
+#		var planar = ang_vel - vertical
+#		global_transform.basis = global_transform.basis.rotated(planar.normalized(), -planar.length()*delta)
+
 
 func process_movement(delta):
 	var cam_transform = camera.get_global_transform()
@@ -128,42 +137,44 @@ func process_movement(delta):
 	if is_on_floor() and jump_frame_buffering > 0:
 		gravity_vel.y = JUMP_SPEED
 		jump_frame_buffering = 0
+		player_vel += get_floor_velocity()
 	else:
 		gravity_vel += Vector3.UP * delta * GRAVITY
 		jump_frame_buffering -= 1
-
+	
+	if floor_node != null and fix_enabled:
+		self.transform.origin -= get_floor_displacement(delta)
+	
 	vel = player_vel + gravity_vel - get_floor_velocity()
-	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES)
-	gravity_vel = vel.project(Vector3.UP)
-
+	vel = move_and_slide(vel, Vector3.UP, false, MAX_SLIDES, MAX_SLOPE_ANGLE)
+		
+	floor_node = get_floor_node() if is_on_floor() else null
 	if is_on_floor():
-		floor_node = get_floor_node()
-
-	if is_on_floor() and !follow_floor_rotation:
-		var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
-		if ang_vel != Vector3():
-			player_body.transform.basis = player_body.transform.basis.rotated(ang_vel.normalized(), ang_vel.length()*delta)
-			# Only rotate around UP-axis for camera
-			camera_rotation -= ang_vel.project(Vector3.UP)*delta
-			camera_helper.rotation = camera_rotation
+		gravity_vel = Vector3()
+	
+	if floor_node != null:
+		handle_player_rotations(delta)
+	
+	if floor_node != null and fix_enabled:
+		self.transform.origin += get_floor_displacement(delta)
+		
+	if is_on_floor() and current_parent != floor_node:
+		make_parent(floor_node)
+	elif !is_on_floor() and current_parent != global_parent:
+		make_parent(global_parent)
+		lock_basis_up_direction()
 		
 	debug_info.plot_bool("is_on_floor", is_on_floor())
 	debug_info.plot_float("floor_velocity()", get_floor_velocity().length())
-	debug_info.add("velocity", vel)
-	debug_info.add("parent.name", str(current_parent) + " : " + current_parent.name)
+	debug_info.add("parent", str(current_parent) + " : " + current_parent.name)
 	
-	if is_on_floor() and current_parent != floor_node:
-		# yield(get_tree(), "idle_frame")
-		print("\n", current_parent.name, " -> ", floor_node.name)
-		print("in physics frame: ", Engine.get_physics_frames())
-		make_parent(floor_node)
-		# call_deferred("make_parent", floor_node)
-	elif !is_on_floor() and current_parent != global_parent:
-		print("\n", current_parent.name, " -> ", global_parent.name)
-		print("in physics frame: ", Engine.get_physics_frames())
-		# call_deferred("make_parent", global_parent)
-		# yield(get_tree(), "idle_frame")
-		make_parent(global_parent)
+	debug_info.add("local.basis.x", transform.basis.x)
+	debug_info.add("local.basis.y", transform.basis.y)
+	debug_info.add("local.basis.z", transform.basis.z)
+	
+	debug_info.add("global.basis.x", global_transform.basis.x)
+	debug_info.add("global.basis.y", global_transform.basis.y)
+	debug_info.add("global.basis.z", global_transform.basis.z)
 
 
 func process_input(_delta):
@@ -172,7 +183,12 @@ func process_input(_delta):
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		else:
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-			
+	
+	if Input.is_action_just_pressed("toggle_fix1"):
+		fix_enabled = !fix_enabled
+	if Input.is_action_just_pressed("toggle_fix2"):
+		use_global_up = ! use_global_up
+
 	input_movement_vector = Vector2()
 	if Input.is_action_pressed("movement_forward"):
 		input_movement_vector.y += 1
@@ -193,7 +209,7 @@ func add_position_marker(delta):
 	marker_timer += delta
 	if marker_timer > 0.1:
 		var new_marker = pos_marker.instance()
-		new_marker.transform = self.transform
+		new_marker.global_transform = self.global_transform
 		global_parent.add_child(new_marker)
 		marker_timer = 0.0
 

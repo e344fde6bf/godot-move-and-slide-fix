@@ -16,9 +16,10 @@ script = ExtResource( 1 )
 transform = Transform( 1, 0, 0, 0, -1.62921e-07, -1, 0, 1, -1.62921e-07, 0, 0, 0 )
 shape = SubResource( 1 )
 
-[node name="Model" type="CSGMesh" parent="PlayerBody"]
+[node name="Model" type="MeshInstance" parent="PlayerBody"]
 transform = Transform( 1, 0, 0, 0, 1, 3.12639e-13, 0, -3.12639e-13, 1, 0, -1.62921e-07, 2.65433e-14 )
 mesh = SubResource( 2 )
+material/0 = null
 
 [node name="CameraHelper" type="Spatial" parent="."]
 
