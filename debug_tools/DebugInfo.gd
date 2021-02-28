@@ -23,26 +23,32 @@ class KeyValueHelper:
 			label_to_index[label] = new_index
 			index_to_label[new_index] = label
 			data.append(value)
+	
+	func has_label(label: String):
+		return label in label_to_index
 
 
 onready var text_info_node = $TextInfo
 onready var item_list_node = $DebugPlots
 
-const plotter_bool = preload("res://DebugPlotterBool.tscn")
-const plotter_float = preload("res://DebugPlotterFloat.tscn")
+const plotter_bool = preload("res://debug_tools/DebugPlotterBool.tscn")
+const plotter_float = preload("res://debug_tools/DebugPlotterFloat.tscn")
+const debug_vector = preload("res://debug_tools/DebugVector.tscn")
 
 var info_data
 var plot_data
+var vector_data
 
 func _ready():
 	info_data = KeyValueHelper.new()
 	plot_data = KeyValueHelper.new()
+	vector_data = KeyValueHelper.new()
 	
 func add(label: String, value):
 	info_data.add(label, str(value))
 
 func plot_bool(label: String, value: bool):
-	if label in plot_data.label_to_index:
+	if plot_data.has_label(label):
 		plot_data.get(label).add_data_point(value)
 	else:
 		var plot = plotter_bool.instance()
@@ -53,7 +59,7 @@ func plot_bool(label: String, value: bool):
 		plot_data.add(label, plot)
 		
 func plot_float(label: String, value: float, y_min = 0.0, y_max = 1.0):
-	if label in plot_data.label_to_index:
+	if plot_data.has_label(label):
 		plot_data.get(label).add_data_point(value, y_min, y_max)
 	else:
 		var plot = plotter_float.instance()
@@ -64,7 +70,7 @@ func plot_float(label: String, value: float, y_min = 0.0, y_max = 1.0):
 		plot_data.add(label, plot)
 		
 func plot_vec3(label: String, value: Vector3, y_min = 0.0, y_max = 1.0):
-	if label+".x" in plot_data.label_to_index:
+	if plot_data.has_label(label+".x"):
 		plot_data.get(label+".x").add_data_point(value.x, y_min, y_max)
 		plot_data.get(label+".y").add_data_point(value.y, y_min, y_max)
 		plot_data.get(label+".z").add_data_point(value.z, y_min, y_max)
@@ -87,6 +93,13 @@ func plot_vec3(label: String, value: Vector3, y_min = 0.0, y_max = 1.0):
 		plot_data.add(label+".x", plot_x)
 		plot_data.add(label+".y", plot_y)
 		plot_data.add(label+".z", plot_z)
+
+func draw_vector(label: String, parent: Node, vector: Vector3, offset=Vector3(), scale=1.0, color=null):
+	if !vector_data.has_label(label):
+		var vec = debug_vector.instance()
+		parent.add_child(vec)
+		vector_data.add(label, vec)
+	vector_data.get(label).orient_vector(vector, offset, scale, color)
 
 func render():
 	var result = ""

@@ -14,6 +14,7 @@ export var step: float = 5.0
 
 export var move_limit: float = 50.0
 export var enabled: bool = true
+export var is_printing: bool = false
 
 var vel = 0.0
 var start_pos: Vector3
@@ -32,9 +33,7 @@ func _physics_process(delta):
 	if (current_pos > move_limit and accel > 0) or (current_pos < -move_limit and accel < 0):
 		vel = 0
 		accel *= -1.0
-		return
-	
-	if motion_type == MOTION_TYPE.SINUSOIDAL:
+	elif motion_type == MOTION_TYPE.SINUSOIDAL:
 		transform.origin = start_pos + move_dir * move_limit * sin(t * accel)
 	elif motion_type == MOTION_TYPE.QUADRATIC:
 		vel += accel * delta

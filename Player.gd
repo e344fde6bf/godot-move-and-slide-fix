@@ -4,13 +4,15 @@ const physics_speed = 1
 const GRAVITY = -120 * physics_speed
 const JUMP_SPEED = 50 * physics_speed
 const PLAYER_SPEED = 30 * physics_speed
-const MAX_SLOPE_ANGLE = deg2rad(60)
+const MAX_SLOPE_ANGLE = deg2rad(50)
 const CAMERA_CLAMP_ANGLE = deg2rad(89)
 const MAX_SLIDES = 4
+var mouse_sensitivity = 0.01
 
 export(float, 0.1, 100.0) var camera_distance = 12.0
-export var follow_floor_rotation: bool = true
-var mouse_sensitivity = 0.01
+export var camera_follows_rotation: bool = false
+
+var use_improved_approximation = true
 
 onready var player = $"."
 onready var player_body = $PlayerBody
@@ -19,6 +21,7 @@ onready var camera_helper = $CameraHelper
 onready var camera = $CameraHelper/CameraPosition/Camera
 onready var camera_position = $CameraHelper/CameraPosition
 onready var debug_info = $DebugInfo
+onready var ground_ray = $PlayerBody/RayCast
 
 const pos_marker = preload("res://PosMarker.tscn")
 
@@ -31,14 +34,14 @@ const JUMP_BUFFER_FRAME_COUNT = 3
 var jump_frame_buffering: int = 0
 var floor_node = null
 
-export var use_improved_approximation: bool = true
-
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	camera_position.translate_object_local(Vector3(0, 0, camera_distance))
 	debug_info.add("fps", 0)
 	debug_info.add("time", 0)
-	debug_info.add("use_improved_approximation", use_improved_approximation)
+	debug_info.add("improved_velocity_calc", use_improved_approximation)
+	
+	process_priority = 100
 
 func _process(_delta):
 	pass
@@ -46,7 +49,7 @@ func _process(_delta):
 func _physics_process(delta):
 	debug_info.add("fps", Engine.get_frames_per_second())
 	debug_info.add("time", OS.get_ticks_msec() / 1000.0)
-	debug_info.add("use_improved_approximation", use_improved_approximation)
+	debug_info.add("improved_velocity_calc", str(use_improved_approximation) + " (Press Q to toggle)") 
 	process_input(delta)
 	process_movement(delta)
 	add_position_marker(delta)
@@ -68,12 +71,18 @@ func improved_floor_velocity_estimate(delta):
 	
 	return -get_floor_velocity() + floor_velocity_due_to_rotation(delta)
 
+func get_displacement(node):
+	var start_pos = PhysicsServer.body_get_direct_state(node.get_rid()).transform.origin
+	return node.global_transform.origin - start_pos
+
+func get_linear_velocity(node, delta):
+	return get_displacement(node) / delta
+
 func get_floor_displacement():
 	"""
 	This function returns how much the floor has moved since the start of the frame
 	"""
-	var floor_start_pos = PhysicsServer.body_get_direct_state(floor_node.get_rid()).transform.origin
-	return floor_node.global_transform.origin - floor_start_pos
+	return get_displacement(floor_node)
 		
 func floor_velocity_due_to_rotation(delta):
 	"""
@@ -108,6 +117,32 @@ func get_floor_node():
 		return collision.collider
 	assert(false)
 
+func apply_rotations(delta, player_dir: Vector3):
+	if player_dir != Vector3():
+		var basis = Basis()
+		var dir_planar = Plane(Vector3.UP, 0).project(player_dir).normalized()
+		basis.y = -dir_planar
+		basis.z = Vector3.UP
+		basis.x = basis.y.cross(basis.z)
+		player_body.global_transform.basis = basis
+		
+	if !is_on_floor():
+		return
+
+	var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
+	if ang_vel == Vector3():
+		return
+		
+	var ang_vertical = ang_vel.project(Vector3.UP)
+	var _ang_planar = ang_vel - ang_vertical
+
+	self.transform.basis = self.transform.basis.rotated(ang_vertical.normalized(), ang_vertical.length()*delta)
+	
+	if !camera_follows_rotation:
+		# Only rotate around UP-axis for camera
+		camera_rotation -= ang_vel.project(Vector3.UP)*delta
+		camera_helper.rotation = camera_rotation
+
 func process_movement(delta):
 	var cam_transform = camera.get_global_transform()
 	dir = Vector3.ZERO
@@ -118,9 +153,14 @@ func process_movement(delta):
 		dir.y = 0
 		dir = dir.normalized()
 
+		if is_on_floor():
+			dir = Plane(ground_ray.get_collision_normal(), 0).project(dir)
+			# Alternatively, could not normalise this to go slower on inclines
+			dir = dir.normalized()
+	
 	var player_vel = dir * PLAYER_SPEED
 	var floor_vel_adjust = improved_floor_velocity_estimate(delta)
-	
+		
 	if is_on_floor() and jump_frame_buffering > 0:
 		gravity_vel.y = JUMP_SPEED
 		# `move_and_slide()` adds `get_floor_velocity()` internally so we add
@@ -131,32 +171,40 @@ func process_movement(delta):
 		floor_vel_adjust += get_floor_velocity()
 		jump_frame_buffering = 0
 	else:
-		gravity_vel += Vector3.UP * delta * GRAVITY
+		if is_on_floor():
+			gravity_vel += ground_ray.get_collision_normal() * delta * GRAVITY
+		else:
+			gravity_vel += Vector3.UP * delta * GRAVITY
 		jump_frame_buffering -= 1
+		
+
 
 	vel = player_vel + gravity_vel + floor_vel_adjust * int(use_improved_approximation)
-	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES)
-	gravity_vel = vel.project(Vector3.UP)
+	vel = player.move_and_slide(vel, Vector3.UP, false, MAX_SLIDES, MAX_SLOPE_ANGLE)
 	
 	if is_on_floor():
 		floor_node = get_floor_node()
-	
-	if is_on_floor() and use_improved_approximation:
-		self.transform.origin += get_floor_displacement()
+		if use_improved_approximation:
+			self.transform.origin += get_floor_displacement()
 		gravity_vel = Vector3()
-
-	if is_on_floor() and follow_floor_rotation:
-		var ang_vel = PhysicsServer.body_get_direct_state(floor_node.get_rid()).angular_velocity
-		if ang_vel != Vector3():
-			player_body.transform.basis = player_body.transform.basis.rotated(ang_vel.normalized(), ang_vel.length()*delta)
-			# Only rotate around UP-axis for camera
-			camera_rotation += ang_vel.project(Vector3.UP)*delta
-			camera_helper.rotation = camera_rotation
-		
+	else:
+		floor_node = null
+	
+	if is_on_ceiling():
+		gravity_vel = Vector3()
+	
+	
+	apply_rotations(delta, dir)
+	
+	debug_info.draw_vector("dir", self, dir, Vector3(0, 2.5, 0))
+	debug_info.add("floor_node", floor_node.name if floor_node!=null else null)
+	debug_info.plot_float("floor angle", rad2deg(acos(ground_ray.get_collision_normal().dot(Vector3.UP))), 0, MAX_SLOPE_ANGLE)
+	debug_info.plot_float("slide count", get_slide_count(), 0, 4)
 	debug_info.plot_bool("is_on_floor", is_on_floor())
-	debug_info.plot_float("floor_velocity()", get_floor_velocity().length())
-	debug_info.add("velocity", vel)
-
+	debug_info.plot_float("floor speed", get_floor_velocity().length())
+	debug_info.plot_float("player speed", get_linear_velocity(self, delta).length())
+	
+	debug_info.draw_vector("floor_normal", self, get_floor_normal(), Vector3(0, 2.5, 0))
 
 func process_input(_delta):
 	if Input.is_action_just_pressed("ui_cancel"):

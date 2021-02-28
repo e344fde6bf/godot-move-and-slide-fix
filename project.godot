@@ -16,7 +16,7 @@ _global_script_class_icons={
 [application]
 
 config/name="move_and_slide-improvement"
-run/main_scene="res://TestWorld.tscn"
+run/main_scene="res://test_world/TestWorld.tscn"
 config/icon="res://icon.png"
 
 [display]
@@ -71,4 +71,3 @@ toggle_jerk_smoothing={
 [rendering]
 
 threads/thread_model=2
-environment/default_environment="res://default_env.tres"
